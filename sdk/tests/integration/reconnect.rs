@@ -265,4 +265,23 @@ async fn given_a_connection_drop_when_publishing_concurrently_then_should_confir
             .expect("concurrent publish task")
             .expect("concurrent publish recovers");
     }
+
+    let expected: std::collections::BTreeSet<Vec<u8>> =
+        (0..32_u32).map(|sequence| sequence.to_le_bytes().to_vec()).collect();
+    let recovered = crate::harness::eventually(|| {
+        let topic = laser.topic("pulse");
+        let expected = expected.clone();
+        async move {
+            let mut cursor = topic.replay().expect("reader opens");
+            let messages = cursor.poll().await.expect("replay succeeds");
+            let actual = messages
+                .into_iter()
+                .map(|message| message.payload)
+                .filter(|payload| expected.contains(payload))
+                .collect::<std::collections::BTreeSet<_>>();
+            (actual == expected).then_some(())
+        }
+    })
+    .await;
+    assert_eq!(recovered, ());
 }
