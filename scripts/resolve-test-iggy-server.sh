@@ -29,8 +29,8 @@ fi
 # When set, the resolver does not download or verify; it uses the provided binary directly.
 # This is an explicit, opt-in override: the user is responsible for validating the binary.
 if [[ -n "${LASER_TEST_IGGY_SERVER:-}" ]]; then
-  if [[ ! -x "$LASER_TEST_IGGY_SERVER" ]]; then
-    echo "LASER_TEST_IGGY_SERVER is not executable: $LASER_TEST_IGGY_SERVER" >&2
+  if [[ ! -f "$LASER_TEST_IGGY_SERVER" ]] || [[ ! -x "$LASER_TEST_IGGY_SERVER" ]]; then
+    echo "LASER_TEST_IGGY_SERVER is not a regular, executable file: $LASER_TEST_IGGY_SERVER" >&2
     exit 1
   fi
   printf '%s\n' "$LASER_TEST_IGGY_SERVER"
@@ -51,11 +51,13 @@ esac
 # If a non-default version is requested, require an explicit checksum or LASER_TEST_IGGY_SERVER.
 if [[ "$FORK_VERSION" != "0.9.2-ld" ]]; then
   if [[ -z "${LASER_TEST_IGGY_SHA256:-}" ]]; then
-    # Check if a pin file exists for this version.
-    pin_file="$(dirname "$(realpath "$0")")/iggy-server-${suffix}.sha256"
+    # Check if a version-specific pin file exists (includes FORK_VERSION in filename).
+    script_dir="$(dirname "$(realpath "$0")")"
+    pin_file="$script_dir/iggy-server-${FORK_VERSION}-${suffix}.sha256"
     if [[ ! -f "$pin_file" ]]; then
       echo "No trusted checksum for version $FORK_VERSION." >&2
-      echo "Set LASER_TEST_IGGY_SHA256 explicitly or use LASER_TEST_IGGY_SERVER to specify a local binary." >&2
+      echo "Expected pin file: $pin_file" >&2
+      echo "Either provide LASER_TEST_IGGY_SHA256 explicitly or use LASER_TEST_IGGY_SERVER." >&2
       exit 1
     fi
   fi
