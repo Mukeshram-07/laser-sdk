@@ -77,3 +77,35 @@ Every fluent or direct publish that gives up returns Rust `LaserError::PublishFa
 Batching producers serialize flushes. A failed timer flush never stops the timer. Its failure is kept until the next `send()`, `flush()`, or `close()` reports it. A `send()` that finds it does not queue its record and returns the kept failure with that record added to the unconfirmed records. `flush()` and `close()` report it after they drain the queue. Several kept failures arrive as one publish failure that lists the records of every failed batch. Inspect a publish failure before retrying because some records can already be committed.
 
 A Python background producer hands each failure to the `error_callback` of its `BackgroundConfig`. Without one, the failure is logged on the `laser_sdk` logger and dropped, as in Rust. A TypeScript background producer hands each failure to its `onError` callback and awaits it. Without a callback, or when the callback throws, the producer keeps the original failure and reports it from `shutdown()`. The 0.6.0 changes to failure reporting are listed in [client behavior](client-behavior.md).
+
+## Test coverage
+
+The guarantees documented above are backed by integration tests in
+`sdk/tests/integration/publish_recovery.rs`.
+
+| Scenario | Status | Test function |
+|---|---|---|
+| Publish retry after connection drop | ✅ Implemented | `given_connection_drop_before_response_when_retrying_then_result_is_bounded_success_or_publish_failed` |
+| Partial batch confirmation — `committed` vs `unconfirmed` | ✅ Implemented | `given_partial_batch_when_server_unreachable_then_confirmed_ranges_not_in_unconfirmed` |
+| Re-authentication after session invalidation | ✅ Implemented | `given_leader_failover_when_session_invalidated_then_sdk_reauthenticates_and_publishes` |
+| Concurrent publish recovery — no silent loss | ✅ Implemented | `given_concurrent_publishes_when_recovering_then_no_silent_loss_and_single_recovery_path` |
+| Repeated server restart — progress resumes | ✅ Implemented | `given_repeated_server_restarts_when_retries_configured_then_progress_resumes_each_time` |
+| Retry exhaustion returns bounded error | ✅ Implemented | `given_exhausted_retries_when_server_unavailable_then_returns_error_not_hanging` |
+| Consumer-group recovery — offsets preserved | ✅ Implemented | `given_consumer_group_interrupted_when_reconnected_then_offsets_preserved_and_at_least_once` |
+| Single-node mapped-port routing | ⚠️ Not implemented | See limitation below |
+
+### Limitation: single-node mapped-port routing
+
+`TestIggy` binds the server on the same TCP address it advertises in its
+topology response.  There is no harness API to make the server announce a
+*different* address than it binds, and no TCP proxy that lies in the Iggy
+handshake is available.  A mapped-port test would require one of:
+
+- A server flag that sets `advertised_addr` to an address distinct from the
+  bind address, exposed via `TestIggy::start_with(env)`.
+- A proxy that intercepts the topology response and substitutes an unreachable
+  address for the first discovery, then a reachable one later.
+
+Until such infrastructure exists this scenario cannot be tested
+deterministically.  The SDK behaviour (prefer caller endpoint, fall back on
+topology failure) is documented but not regression-tested.

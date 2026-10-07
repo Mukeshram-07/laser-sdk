@@ -27,6 +27,7 @@ mod mcp;
 mod memory;
 mod provenance;
 mod queue_pressure;
+mod publish_recovery;
 mod reconnect;
 mod reliable;
 mod replay;
@@ -42,3 +43,4 @@ mod streaming;
 mod typed_topics;
 mod warm_dedup;
 mod workflow;
+
