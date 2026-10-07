@@ -179,6 +179,53 @@ pub struct TestIggy {
     env: Vec<(String, String)>,
 }
 
+pub struct MappedTestIggy {
+    server: TestIggy,
+    proxy_port: u16,
+    proxy_task: tokio::task::JoinHandle<()>,
+}
+
+impl MappedTestIggy {
+    pub async fn start() -> Self {
+        let server = TestIggy::start_pinned().await;
+        let proxy_port = free_host_port();
+        let target = Arc::new(AtomicU16::new(server.tcp_port));
+        let proxy_task = spawn_stable_proxy(proxy_port, target).await;
+        Self {
+            server,
+            proxy_port,
+            proxy_task,
+        }
+    }
+
+    pub fn connection_string(&self) -> String {
+        format!(
+            "iggy+tcp://{DEFAULT_ROOT_USERNAME}:{DEFAULT_ROOT_PASSWORD}@127.0.0.1:{}",
+            self.proxy_port
+        )
+    }
+
+    pub async fn laser_reconnecting(
+        &self,
+        stream: impl Into<String>,
+    ) -> Result<Laser, IggyError> {
+        let client = IggyClientBuilder::from_connection_string(&self.connection_string())?
+            .build()?;
+        client.connect().await?;
+        Ok(Laser::from_client(client).with_default_stream(stream))
+    }
+
+    pub async fn restart(&self) {
+        self.server.restart().await;
+    }
+}
+
+impl Drop for MappedTestIggy {
+    fn drop(&mut self) {
+        self.proxy_task.abort();
+    }
+}
+
 #[allow(dead_code)]
 impl TestIggy {
     pub async fn start() -> Self {

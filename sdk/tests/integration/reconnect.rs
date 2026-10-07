@@ -1,4 +1,4 @@
-use crate::test_iggy::{TestIggy, TestIggyCluster};
+use crate::test_iggy::{MappedTestIggy, TestIggyCluster};
 use std::collections::BTreeMap;
 use std::time::Duration;
 use tokio::time::Instant;
@@ -165,7 +165,7 @@ async fn wait_for_progress(counter: &std::sync::atomic::AtomicU64, expected: u64
 #[serial_test::serial(integration)]
 async fn given_a_server_restart_when_reusing_the_same_client_then_should_publish_and_consume_again()
 {
-    let iggy = TestIggy::start_pinned().await;
+    let iggy = MappedTestIggy::start().await;
     let laser = iggy
         .laser_reconnecting("reconnect_it")
         .await
@@ -190,30 +190,24 @@ async fn given_a_server_restart_when_reusing_the_same_client_then_should_publish
     // cached producer whose connection died is not permanently poisoned: once
     // the client reconnects, ensure and publish succeed again. Each attempt is
     // bounded so a producer that blocks inside a reconnect cannot hang the loop.
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        let recovered = tokio::time::timeout(Duration::from_secs(3), async {
-            laser.stream("reconnect_it").ensure().await?;
-            topic.ensure(1).await?;
-            topic
-                .send(&b"after-restart"[..], BTreeMap::new(), None)
-                .await
+    for _ in 0..2 {
+        let recovered = crate::harness::eventually(|| async {
+            let recovered = tokio::time::timeout(Duration::from_secs(3), async {
+                laser.stream("reconnect_it").ensure().await?;
+                topic.ensure(1).await?;
+                topic
+                    .send(&b"after-restart"[..], BTreeMap::new(), None)
+                    .await
+            })
+            .await;
+            match recovered {
+                Ok(Ok(response)) => Some(response),
+                Ok(Err(_)) | Err(_) => None,
+            }
         })
         .await;
-        match recovered {
-            Ok(Ok(_)) => break,
-            Ok(Err(error)) => {
-                assert!(
-                    Instant::now() < deadline,
-                    "the cached producer never recovered from the restart: {error}"
-                );
-                tokio::time::sleep(Duration::from_millis(150)).await;
-            }
-            Err(_) => assert!(
-                Instant::now() < deadline,
-                "the cached producer never recovered from the restart (send hung)"
-            ),
-        }
+        assert!(recovered.is_some(), "publish did not recover after restart");
+        iggy.restart().await;
     }
 
     let mut cursor = topic.replay().expect("reader opens");
@@ -228,4 +222,47 @@ async fn given_a_server_restart_when_reusing_the_same_client_then_should_publish
         payloads.contains(&b"after-restart".to_vec()),
         "the post-restart publish reads back through the same client"
     );
+}
+
+#[tokio::test]
+#[serial_test::serial(integration)]
+async fn given_a_connection_drop_when_publishing_concurrently_then_should_confirm_every_record()
+{
+    let iggy = MappedTestIggy::start().await;
+    let laser = iggy
+        .laser_reconnecting("concurrent_reconnect_it")
+        .await
+        .expect("connect");
+    laser
+        .stream("concurrent_reconnect_it")
+        .ensure()
+        .await
+        .expect("stream exists");
+    laser
+        .topic("pulse")
+        .ensure(1)
+        .await
+        .expect("topic exists");
+    laser
+        .topic("pulse")
+        .send(&b"warm-up"[..], BTreeMap::new(), None)
+        .await
+        .expect("warm-up publish succeeds");
+
+    iggy.restart().await;
+
+    let mut publishes = Vec::new();
+    for sequence in 0..32_u32 {
+        let topic = laser.topic("pulse");
+        publishes.push(tokio::spawn(async move {
+            let payload = sequence.to_le_bytes();
+            topic.send(payload, BTreeMap::new(), None).await
+        }));
+    }
+    for publish in publishes {
+        publish
+            .await
+            .expect("concurrent publish task")
+            .expect("concurrent publish recovers");
+    }
 }
